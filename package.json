@@ -1,0 +1,48 @@
+{
+  "name": "@hxa/agent-sdk",
+  "version": "1.0.0",
+  "description": "TypeScript SDK for connecting external agents to HxA Link via WebSocket",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./send-once": {
+      "types": "./dist/send-once.d.ts",
+      "import": "./dist/send-once.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "tsc --noEmit && npm run build"
+  },
+  "keywords": [
+    "hxa-link",
+    "agent",
+    "sdk",
+    "websocket",
+    "socket.io",
+    "im",
+    "messaging"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/coco-xyz/hxa-agent-sdk"
+  },
+  "dependencies": {
+    "socket.io-client": "^4.7.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.4.0"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ]
+}

@@ -1,4 +1,6 @@
 export { AgentClient, AgentClient as ExternalAgentClient } from './client.js'
+export { parseMessageContent, resolveMediaUrl, formatFileSize } from './content.js'
+export { downloadMedia } from './media.js'
 export type {
   InvitePackage,
   AgentSDKConfig,
@@ -10,6 +12,19 @@ export type {
   ConnectAck,
   TypingEvent,
   Logger,
+  MessageType,
+  ParsedContent,
+  TextContent,
+  ImageContent,
+  FileContent,
+  VoiceContent,
+  VideoContent,
+  CardContent,
+  LocationContent,
+  EmojiBigContent,
+  PollContent,
+  BurnAfterReadingContent,
+  DownloadMediaOptions,
 } from './types.js'
 
 import { AgentClient } from './client.js'
@@ -20,11 +35,17 @@ import type { AgentSDKConfig } from './types.js'
  *
  * @example
  * ```ts
- * import { createAgent } from '@hxa/agent-sdk'
+ * import { createAgent, parseMessageContent, downloadMedia } from '@hxa/agent-sdk'
  *
  * const client = createAgent({
  *   invitePackage: { agentId: '...', inviteToken: 'hxal_...', wsEndpoint: 'wss://...' },
- *   onMessage: (msg) => console.log('Received:', msg),
+ *   onMessage: async (msg) => {
+ *     const content = parseMessageContent(msg)
+ *     if (content.type === 'image') {
+ *       const buf = await downloadMedia({ url: content.url, authToken: '...' })
+ *       console.log(`Image downloaded: ${buf.length} bytes`)
+ *     }
+ *   },
  * })
  * client.connect()
  * ```

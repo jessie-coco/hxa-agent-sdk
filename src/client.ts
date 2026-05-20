@@ -5,6 +5,7 @@ import type {
   ConnectAck,
   MessageStatus,
   MessageSync,
+  MessageSummary,
   TypingEvent,
   Logger,
   SendMessageParams,
@@ -24,6 +25,7 @@ export class AgentClient {
   private socket: Socket | null = null
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null
   private wsSessionToken: string | null = null
+  private joinedConversations = new Set<string>()
   private readonly config: Required<Pick<AgentSDKConfig, 'autoReconnect' | 'socketPath'>> & AgentSDKConfig
   private readonly log: Logger
 
@@ -179,7 +181,8 @@ export class AgentClient {
     })
 
     // ── Incoming messages (broadcast from rooms.ts) ───────────────────────
-    socket.on('message:new', (message: IncomingMessage) => {
+    socket.on('message:new', (data: IncomingMessage | { message: IncomingMessage }) => {
+      const message = 'message' in data && data.message ? data.message : data as IncomingMessage
       this.log.debug(`[ExternalAgent] message:new in ${message.conversationId} from ${message.senderId}`)
       this.config.onMessage?.(message)
     })
@@ -194,9 +197,41 @@ export class AgentClient {
       this.log.error(`[ExternalAgent] message:error: ${error.error}`, error)
     })
 
+    // ── Message summary (for unjoined conversations) ───────────────────────
+    socket.on('message:summary', (data: MessageSummary) => {
+      if (data.senderId === this.agentId) return
+
+      if (!this.joinedConversations.has(data.conversationId)) {
+        this.log.info(`[ExternalAgent] Summary for unjoined conv ${data.conversationId}, auto-joining`)
+        socket.emit('conversation:join', { conversationId: data.conversationId }, (resp: { success: boolean; error?: string }) => {
+          if (resp?.success) {
+            this.joinedConversations.add(data.conversationId)
+            this.log.info(`[ExternalAgent] Auto-joined conv ${data.conversationId}`)
+          } else {
+            this.log.warn(`[ExternalAgent] Auto-join failed for ${data.conversationId}: ${resp?.error}`)
+          }
+        })
+      }
+
+      this.config.onMessageSummary?.(data)
+    })
+
     // ── Offline message sync (on reconnect) ───────────────────────────────
     socket.on('message:sync', (sync: MessageSync) => {
       this.log.info(`[ExternalAgent] Synced ${sync.count} offline messages (hasMore: ${sync.hasMore})`)
+
+      const convIds = new Set(sync.messages.map(m => m.conversationId))
+      for (const convId of convIds) {
+        if (!this.joinedConversations.has(convId)) {
+          socket.emit('conversation:join', { conversationId: convId }, (resp: { success: boolean; error?: string }) => {
+            if (resp?.success) {
+              this.joinedConversations.add(convId)
+              this.log.info(`[ExternalAgent] Auto-joined conv ${convId} (from sync)`)
+            }
+          })
+        }
+      }
+
       this.config.onMessageSync?.(sync)
     })
 
@@ -244,11 +279,30 @@ export class AgentClient {
     socket.on('disconnect', (reason: string) => {
       this.log.warn(`[ExternalAgent] Disconnected: ${reason}`)
       this.stopHeartbeat()
+      this.joinedConversations.clear()
+
+      // Socket.IO does NOT auto-reconnect on server-initiated disconnect
+      if (reason === 'io server disconnect' && this.config.autoReconnect) {
+        const delay = 5000
+        this.log.info(`[ExternalAgent] Server-initiated disconnect — retrying in ${delay / 1000}s`)
+        setTimeout(() => {
+          if (!this.socket?.connected) {
+            this.log.info('[ExternalAgent] Manually reconnecting after server disconnect')
+            this.socket?.connect()
+          }
+        }, delay)
+      }
+
       this.config.onDisconnect?.(reason)
     })
 
     socket.on('connect_error', (error: Error) => {
       this.log.error(`[ExternalAgent] Connection error: ${error.message}`)
+      if (this.wsSessionToken && /auth|SESSION|INVALID/i.test(error.message)) {
+        this.log.info('[ExternalAgent] Clearing stale session token, will retry with invite token')
+        this.wsSessionToken = null
+        socket.auth = { credential: this.config.invitePackage.inviteToken }
+      }
     })
 
     socket.io.on('reconnect', (attempt: number) => {

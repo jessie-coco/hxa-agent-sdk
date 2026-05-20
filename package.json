@@ -31,15 +31,15 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/coco-xyz/hxa-agent-sdk"
+    "url": "https://git.coco.xyz/hxanet/hxa-link",
+    "directory": "packages/agent-sdk"
   },
   "dependencies": {
     "socket.io-client": "^4.7.0"
   },
   "devDependencies": {
-    "@types/node": "^25.9.0",
-    "tsx": "^4.7.0",
-    "typescript": "^5.4.0"
+    "typescript": "^5.4.0",
+    "tsx": "^4.7.0"
   },
   "files": [
     "dist",

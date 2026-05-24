@@ -56,10 +56,8 @@ export class AgentClient {
             return;
         }
         const { invitePackage, socketPath, autoReconnect } = this.config;
-        // Parse the wsEndpoint — strip any path suffix like /ws/agent since Socket.IO uses its own path
-        const baseUrl = invitePackage.wsEndpoint
-            .replace(/\/ws\/agent\/?$/, '')
-            .replace(/\/ws\/?$/, '');
+        // Socket.IO needs just the origin — the path is set via the `path` option
+        const baseUrl = new URL(invitePackage.wsEndpoint).origin;
         const authPayload = this.wsSessionToken
             ? { wsSessionToken: this.wsSessionToken }
             : { credential: invitePackage.inviteToken };

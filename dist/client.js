@@ -12,6 +12,7 @@ export class AgentClient {
     socket = null;
     heartbeatTimer = null;
     wsSessionToken = null;
+    joinedConversations = new Set();
     config;
     log;
     constructor(config) {
@@ -21,6 +22,9 @@ export class AgentClient {
             ...config,
         };
         this.log = config.logger ?? console;
+        if (config.sessionToken) {
+            this.wsSessionToken = config.sessionToken;
+        }
     }
     /** Whether the socket is currently connected. */
     get isConnected() {
@@ -29,6 +33,18 @@ export class AgentClient {
     /** The agent ID from the invite package. */
     get agentId() {
         return this.config.invitePackage.agentId;
+    }
+    /** Current session token (for external persistence). */
+    get sessionToken() {
+        return this.wsSessionToken;
+    }
+    /** HTTP base URL derived from wsEndpoint (e.g. `https://host/hxa-link-api`). */
+    get apiBaseUrl() {
+        const ep = this.config.invitePackage.wsEndpoint;
+        const parsed = new URL(ep);
+        const origin = parsed.origin.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:');
+        const apiBase = parsed.pathname.replace(/\/ws(\/.*)?$/, '');
+        return `${origin}${apiBase}`;
     }
     /**
      * Connect to the HxA Link WebSocket server.
@@ -135,6 +151,26 @@ export class AgentClient {
             return;
         this.socket.emit('conversation:leave', { conversationId });
     }
+    /**
+     * Register a custom event handler on the underlying Socket.IO socket.
+     * Use for platform-specific events not covered by the standard callbacks.
+     */
+    on(event, handler) {
+        if (!this.socket) {
+            throw new Error('Cannot register event handler before connect()');
+        }
+        this.socket.on(event, handler);
+    }
+    /**
+     * Emit a custom event on the underlying Socket.IO socket.
+     */
+    emit(event, ...args) {
+        if (!this.socket?.connected) {
+            this.log.warn(`[ExternalAgent] Cannot emit '${event}' — not connected`);
+            return;
+        }
+        this.socket.emit(event, ...args);
+    }
     // ── Private ─────────────────────────────────────────────────────────────────
     registerListeners() {
         const socket = this.socket;
@@ -143,10 +179,12 @@ export class AgentClient {
             this.log.info(`[ExternalAgent] Connected as agent ${ack.agentId}`);
             this.wsSessionToken = ack.agentSessionToken;
             this.startHeartbeat(ack.heartbeatInterval);
+            this.config.onSessionToken?.(ack.agentSessionToken);
             this.config.onConnect?.(ack);
         });
         // ── Incoming messages (broadcast from rooms.ts) ───────────────────────
-        socket.on('message:new', (message) => {
+        socket.on('message:new', (data) => {
+            const message = 'message' in data && data.message ? data.message : data;
             this.log.debug(`[ExternalAgent] message:new in ${message.conversationId} from ${message.senderId}`);
             this.config.onMessage?.(message);
         });
@@ -158,9 +196,38 @@ export class AgentClient {
         socket.on('message:error', (error) => {
             this.log.error(`[ExternalAgent] message:error: ${error.error}`, error);
         });
+        // ── Message summary (for unjoined conversations) ───────────────────────
+        socket.on('message:summary', (data) => {
+            if (data.senderId === this.agentId)
+                return;
+            if (!this.joinedConversations.has(data.conversationId)) {
+                this.log.info(`[ExternalAgent] Summary for unjoined conv ${data.conversationId}, auto-joining`);
+                socket.emit('conversation:join', { conversationId: data.conversationId }, (resp) => {
+                    if (resp?.success) {
+                        this.joinedConversations.add(data.conversationId);
+                        this.log.info(`[ExternalAgent] Auto-joined conv ${data.conversationId}`);
+                    }
+                    else {
+                        this.log.warn(`[ExternalAgent] Auto-join failed for ${data.conversationId}: ${resp?.error}`);
+                    }
+                });
+            }
+            this.config.onMessageSummary?.(data);
+        });
         // ── Offline message sync (on reconnect) ───────────────────────────────
         socket.on('message:sync', (sync) => {
             this.log.info(`[ExternalAgent] Synced ${sync.count} offline messages (hasMore: ${sync.hasMore})`);
+            const convIds = new Set(sync.messages.map(m => m.conversationId));
+            for (const convId of convIds) {
+                if (!this.joinedConversations.has(convId)) {
+                    socket.emit('conversation:join', { conversationId: convId }, (resp) => {
+                        if (resp?.success) {
+                            this.joinedConversations.add(convId);
+                            this.log.info(`[ExternalAgent] Auto-joined conv ${convId} (from sync)`);
+                        }
+                    });
+                }
+            }
             this.config.onMessageSync?.(sync);
         });
         // ── Typing indicators ─────────────────────────────────────────────────
@@ -171,6 +238,7 @@ export class AgentClient {
         socket.on('session:renewed', (data) => {
             this.wsSessionToken = data.agentSessionToken;
             this.log.debug('[ExternalAgent] WS session token renewed');
+            this.config.onSessionToken?.(data.agentSessionToken);
         });
         // ── Heartbeat ACK ─────────────────────────────────────────────────────
         socket.on('heartbeat_ack', (data) => {
@@ -200,23 +268,43 @@ export class AgentClient {
         socket.on('disconnect', (reason) => {
             this.log.warn(`[ExternalAgent] Disconnected: ${reason}`);
             this.stopHeartbeat();
+            this.joinedConversations.clear();
+            // Socket.IO does NOT auto-reconnect on server-initiated disconnect
+            if (reason === 'io server disconnect' && this.config.autoReconnect) {
+                const delay = 5000;
+                this.log.info(`[ExternalAgent] Server-initiated disconnect — retrying in ${delay / 1000}s`);
+                setTimeout(() => {
+                    if (!this.socket?.connected) {
+                        this.log.info('[ExternalAgent] Manually reconnecting after server disconnect');
+                        this.socket?.connect();
+                    }
+                }, delay);
+            }
             this.config.onDisconnect?.(reason);
         });
         socket.on('connect_error', (error) => {
             this.log.error(`[ExternalAgent] Connection error: ${error.message}`);
+            if (this.wsSessionToken && /auth|SESSION|INVALID/i.test(error.message)) {
+                this.log.info('[ExternalAgent] Clearing stale session token, will retry with invite token');
+                this.wsSessionToken = null;
+                socket.auth = { credential: this.config.invitePackage.inviteToken };
+            }
         });
         socket.io.on('reconnect', (attempt) => {
             this.log.info(`[ExternalAgent] Reconnected after ${attempt} attempt(s)`);
         });
         socket.io.on('reconnect_attempt', (attempt) => {
             this.log.debug(`[ExternalAgent] Reconnection attempt #${attempt}`);
-            // Use wsSessionToken for fast reconnect, fall back to invite_token if unavailable
             if (this.wsSessionToken) {
                 socket.auth = { wsSessionToken: this.wsSessionToken };
             }
             else {
                 socket.auth = { credential: this.config.invitePackage.inviteToken };
             }
+        });
+        socket.io.on('reconnect_failed', () => {
+            this.log.error('[ExternalAgent] All reconnection attempts exhausted');
+            this.config.onReconnectFailed?.();
         });
     }
     startHeartbeat(intervalMs) {

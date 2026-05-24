@@ -36,6 +36,9 @@ export class AgentClient {
       ...config,
     }
     this.log = config.logger ?? console
+    if (config.sessionToken) {
+      this.wsSessionToken = config.sessionToken
+    }
   }
 
   /** Whether the socket is currently connected. */
@@ -46,6 +49,20 @@ export class AgentClient {
   /** The agent ID from the invite package. */
   get agentId(): string {
     return this.config.invitePackage.agentId
+  }
+
+  /** Current session token (for external persistence). */
+  get sessionToken(): string | null {
+    return this.wsSessionToken
+  }
+
+  /** HTTP base URL derived from wsEndpoint (e.g. `https://host/hxa-link-api`). */
+  get apiBaseUrl(): string {
+    const ep = this.config.invitePackage.wsEndpoint
+    const parsed = new URL(ep)
+    const origin = parsed.origin.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:')
+    const apiBase = parsed.pathname.replace(/\/ws(\/.*)?$/, '')
+    return `${origin}${apiBase}`
   }
 
   /**
@@ -167,6 +184,28 @@ export class AgentClient {
     this.socket.emit('conversation:leave', { conversationId })
   }
 
+  /**
+   * Register a custom event handler on the underlying Socket.IO socket.
+   * Use for platform-specific events not covered by the standard callbacks.
+   */
+  on(event: string, handler: (...args: unknown[]) => void): void {
+    if (!this.socket) {
+      throw new Error('Cannot register event handler before connect()')
+    }
+    this.socket.on(event, handler)
+  }
+
+  /**
+   * Emit a custom event on the underlying Socket.IO socket.
+   */
+  emit(event: string, ...args: unknown[]): void {
+    if (!this.socket?.connected) {
+      this.log.warn(`[ExternalAgent] Cannot emit '${event}' — not connected`)
+      return
+    }
+    this.socket.emit(event, ...args)
+  }
+
   // ── Private ─────────────────────────────────────────────────────────────────
 
   private registerListeners(): void {
@@ -177,6 +216,7 @@ export class AgentClient {
       this.log.info(`[ExternalAgent] Connected as agent ${ack.agentId}`)
       this.wsSessionToken = ack.agentSessionToken
       this.startHeartbeat(ack.heartbeatInterval)
+      this.config.onSessionToken?.(ack.agentSessionToken)
       this.config.onConnect?.(ack)
     })
 
@@ -244,6 +284,7 @@ export class AgentClient {
     socket.on('session:renewed', (data: { agentSessionToken: string }) => {
       this.wsSessionToken = data.agentSessionToken
       this.log.debug('[ExternalAgent] WS session token renewed')
+      this.config.onSessionToken?.(data.agentSessionToken)
     })
 
     // ── Heartbeat ACK ─────────────────────────────────────────────────────
@@ -311,12 +352,16 @@ export class AgentClient {
 
     socket.io.on('reconnect_attempt', (attempt: number) => {
       this.log.debug(`[ExternalAgent] Reconnection attempt #${attempt}`)
-      // Use wsSessionToken for fast reconnect, fall back to invite_token if unavailable
       if (this.wsSessionToken) {
         socket.auth = { wsSessionToken: this.wsSessionToken }
       } else {
         socket.auth = { credential: this.config.invitePackage.inviteToken }
       }
+    })
+
+    socket.io.on('reconnect_failed', () => {
+      this.log.error('[ExternalAgent] All reconnection attempts exhausted')
+      this.config.onReconnectFailed?.()
     })
   }
 

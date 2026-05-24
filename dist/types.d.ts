@@ -7,6 +7,85 @@ export interface InvitePackage {
     inviteToken: string;
     wsEndpoint: string;
 }
+/** All supported message content types — must match the platform DB schema. */
+export type MessageType = 'text' | 'image' | 'file' | 'voice' | 'video' | 'card' | 'location' | 'emoji_big' | 'poll' | 'burn_after_reading';
+export interface TextContent {
+    type: 'text';
+    text: string;
+}
+export interface ImageContent {
+    type: 'image';
+    url: string;
+    fileName?: string;
+    caption?: string;
+    size?: number;
+    width?: number;
+    height?: number;
+}
+export interface FileContent {
+    type: 'file';
+    url: string;
+    fileName: string;
+    size?: number;
+    mimeType?: string;
+}
+export interface VoiceContent {
+    type: 'voice';
+    url: string;
+    duration?: number;
+}
+export interface VideoContent {
+    type: 'video';
+    url: string;
+    fileName?: string;
+    duration?: number;
+    size?: number;
+    width?: number;
+    height?: number;
+}
+export interface CardContent {
+    type: 'card';
+    title: string;
+    subtitle?: string;
+    fields?: Array<{
+        label: string;
+        value: string;
+    }>;
+    actions?: Array<{
+        label: string;
+        url: string;
+    }>;
+}
+export interface LocationContent {
+    type: 'location';
+    latitude: number;
+    longitude: number;
+    name?: string;
+    address?: string;
+}
+export interface EmojiBigContent {
+    type: 'emoji_big';
+    emoji: string;
+}
+export interface PollContent {
+    type: 'poll';
+    question: string;
+    options: Array<{
+        text: string;
+        votes?: number;
+    }>;
+}
+export interface BurnAfterReadingContent {
+    type: 'burn_after_reading';
+    text: string;
+}
+export type ParsedContent = TextContent | ImageContent | FileContent | VoiceContent | VideoContent | CardContent | LocationContent | EmojiBigContent | PollContent | BurnAfterReadingContent;
+export interface DownloadMediaOptions {
+    url: string;
+    baseUrl?: string;
+    authToken?: string;
+    timeout?: number;
+}
 /**
  * Incoming message received via the WebSocket `message:new` broadcast.
  * Fields match the server-side message schema from rooms.ts broadcastMessage.
@@ -16,7 +95,7 @@ export interface IncomingMessage {
     conversationId: string;
     senderId: string;
     senderType: 'user' | 'agent';
-    type: 'text' | 'image' | 'file' | 'voice' | 'card' | 'location' | 'emoji_big' | 'poll' | 'burn_after_reading';
+    type: MessageType;
     content: string | Record<string, unknown>;
     seq: number;
     clientMsgId?: string;
@@ -56,6 +135,16 @@ export interface ConnectAck {
     serverTime: number;
 }
 /**
+ * Message summary received via `message:summary` when not in the conversation room.
+ * Delivered through the user:{id} room as a notification.
+ */
+export interface MessageSummary {
+    conversationId: string;
+    senderId: string;
+    senderName?: string;
+    preview?: string;
+}
+/**
  * Typing indicator received via `typing` event.
  */
 export interface TypingEvent {
@@ -68,7 +157,7 @@ export interface TypingEvent {
  */
 export interface SendMessageParams {
     conversationId: string;
-    type?: 'text' | 'image' | 'file' | 'voice' | 'card' | 'location' | 'emoji_big' | 'poll' | 'burn_after_reading';
+    type?: MessageType;
     content: string | Record<string, unknown>;
     clientMsgId?: string;
     replyToId?: string;
@@ -88,18 +177,26 @@ export interface Logger {
 export interface AgentSDKConfig {
     /** Invite package with agent credentials and endpoint */
     invitePackage: InvitePackage;
+    /** Pre-existing session token for fast reconnect (e.g. loaded from disk) */
+    sessionToken?: string;
     /** Called when a new message is received */
     onMessage?: (message: IncomingMessage) => void | Promise<void>;
     /** Called when connection is established (after connect_ack) */
     onConnect?: (ack: ConnectAck) => void | Promise<void>;
     /** Called when disconnected */
     onDisconnect?: (reason: string) => void | Promise<void>;
+    /** Called when the session token is updated (connect_ack or session:renewed) — persist it */
+    onSessionToken?: (token: string) => void;
+    /** Called when all reconnection attempts are exhausted */
+    onReconnectFailed?: () => void;
     /** Called on message status updates */
     onMessageStatus?: (status: MessageStatus) => void | Promise<void>;
     /** Called on typing indicators */
     onTyping?: (event: TypingEvent) => void | Promise<void>;
     /** Called when offline messages are synced on reconnect */
     onMessageSync?: (sync: MessageSync) => void | Promise<void>;
+    /** Called when a message summary is received for an unjoined conversation */
+    onMessageSummary?: (summary: MessageSummary) => void | Promise<void>;
     /** Enable automatic reconnection (default: true) */
     autoReconnect?: boolean;
     /** Logger instance (default: console) */

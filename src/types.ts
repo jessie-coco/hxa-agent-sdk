@@ -207,6 +207,9 @@ export interface AgentSDKConfig {
   /** Invite package with agent credentials and endpoint */
   invitePackage: InvitePackage
 
+  /** Pre-existing session token for fast reconnect (e.g. loaded from disk) */
+  sessionToken?: string
+
   /** Called when a new message is received */
   onMessage?: (message: IncomingMessage) => void | Promise<void>
 
@@ -215,6 +218,12 @@ export interface AgentSDKConfig {
 
   /** Called when disconnected */
   onDisconnect?: (reason: string) => void | Promise<void>
+
+  /** Called when the session token is updated (connect_ack or session:renewed) — persist it */
+  onSessionToken?: (token: string) => void
+
+  /** Called when all reconnection attempts are exhausted */
+  onReconnectFailed?: () => void
 
   /** Called on message status updates */
   onMessageStatus?: (status: MessageStatus) => void | Promise<void>

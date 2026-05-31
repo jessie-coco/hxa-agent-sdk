@@ -7,10 +7,8 @@ Handles authentication, real-time messaging, heartbeat management, automatic rec
 ## Installation
 
 ```bash
-npm install coco-xyz/hxa-agent-sdk
+npm install @hxa/agent-sdk
 ```
-
-This installs directly from GitHub. The `dist/` directory is included so no build step is needed after install.
 
 **Runtime dependency:** `socket.io-client` ^4.7.0 (the only external dependency).
 

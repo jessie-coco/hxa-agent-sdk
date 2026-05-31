@@ -13,6 +13,8 @@ export declare class AgentClient {
     private readonly config;
     private readonly log;
     constructor(config: AgentSDKConfig);
+    /** Derive Socket.IO path from the wsEndpoint URL (strip trailing segments after /ws). */
+    private static deriveSocketPath;
     /** Whether the socket is currently connected. */
     get isConnected(): boolean;
     /** The agent ID from the invite package. */

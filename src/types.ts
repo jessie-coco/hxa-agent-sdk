@@ -245,8 +245,9 @@ export interface AgentSDKConfig {
 
   /**
    * Socket.IO path override.
-   * Default: '/ws'
-   * If behind a reverse proxy with a path prefix (e.g., /hxa-link-api), set accordingly.
+   * Auto-derived from wsEndpoint by default (strips segments after `/ws`).
+   * Only set this if your reverse proxy uses a non-standard path.
+   * Example: wsEndpoint 'wss://host/hxa-link-api/ws/agent' → auto-derives '/hxa-link-api/ws'
    */
   socketPath?: string
 }

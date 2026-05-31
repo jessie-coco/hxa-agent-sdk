@@ -21,10 +21,24 @@ export class AgentClient {
             socketPath: DEFAULT_SOCKET_PATH,
             ...config,
         };
+        if (!config.socketPath) {
+            this.config.socketPath = AgentClient.deriveSocketPath(config.invitePackage.wsEndpoint);
+        }
         this.log = config.logger ?? console;
         if (config.sessionToken) {
             this.wsSessionToken = config.sessionToken;
         }
+    }
+    /** Derive Socket.IO path from the wsEndpoint URL (strip trailing segments after /ws). */
+    static deriveSocketPath(wsEndpoint) {
+        try {
+            const pathname = new URL(wsEndpoint).pathname;
+            const wsIdx = pathname.lastIndexOf('/ws');
+            if (wsIdx >= 0)
+                return pathname.substring(0, wsIdx + 3);
+        }
+        catch { /* invalid URL — fall through */ }
+        return DEFAULT_SOCKET_PATH;
     }
     /** Whether the socket is currently connected. */
     get isConnected() {

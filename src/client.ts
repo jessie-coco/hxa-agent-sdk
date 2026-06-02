@@ -1,6 +1,7 @@
 import { io, type Socket } from 'socket.io-client'
 import type {
   AgentSDKConfig,
+  AgentContext,
   IncomingMessage,
   ConnectAck,
   MessageStatus,
@@ -9,11 +10,15 @@ import type {
   TypingEvent,
   Logger,
   SendMessageParams,
+  ResponseMode,
 } from './types.js'
 
 const DEFAULT_SOCKET_PATH = '/ws'
 const DEFAULT_ACK_TIMEOUT_MS = 10_000
 const MAX_RECONNECT_ATTEMPTS = 50
+const DEFAULT_RESPONSE_MODE: ResponseMode = 'at_only'
+const CONTEXT_WAIT_MS = 200
+const CONTEXT_TTL_MS = 30_000
 
 /**
  * AgentClient — Socket.IO client for agents connecting to HxA Link.
@@ -24,10 +29,13 @@ const MAX_RECONNECT_ATTEMPTS = 50
 export class AgentClient {
   private socket: Socket | null = null
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null
+  private contextCleanupTimer: ReturnType<typeof setInterval> | null = null
   private wsSessionToken: string | null = null
   private joinedConversations = new Set<string>()
+  private readonly contextMap = new Map<string, { context: AgentContext; receivedAt: number }>()
   private readonly config: Required<Pick<AgentSDKConfig, 'autoReconnect' | 'socketPath'>> & AgentSDKConfig
   private readonly log: Logger
+  private readonly filterEnabled: boolean
 
   constructor(config: AgentSDKConfig) {
     this.config = {
@@ -39,6 +47,7 @@ export class AgentClient {
       this.config.socketPath = AgentClient.deriveSocketPath(config.invitePackage.wsEndpoint)
     }
     this.log = config.logger ?? console
+    this.filterEnabled = config.messageFilter?.enabled !== false
     if (config.sessionToken) {
       this.wsSessionToken = config.sessionToken
     }
@@ -117,11 +126,13 @@ export class AgentClient {
    */
   disconnect(): void {
     this.stopHeartbeat()
+    this.stopContextCleanup()
     if (this.socket) {
       this.socket.removeAllListeners()
       this.socket.disconnect()
       this.socket = null
     }
+    this.contextMap.clear()
     this.wsSessionToken = null
     this.log.info('[ExternalAgent] Disconnected')
   }
@@ -227,15 +238,59 @@ export class AgentClient {
       this.log.info(`[ExternalAgent] Connected as agent ${ack.agentId}`)
       this.wsSessionToken = ack.agentSessionToken
       this.startHeartbeat(ack.heartbeatInterval)
+      if (this.filterEnabled) {
+        this.startContextCleanup()
+      }
       this.config.onSessionToken?.(ack.agentSessionToken)
       this.config.onConnect?.(ack)
+    })
+
+    // ── Agent context for group messages (arrives before message:new) ────
+    socket.on('message:agent-context', (data: AgentContext) => {
+      this.contextMap.set(data.messageId, { context: data, receivedAt: Date.now() })
+      this.log.debug(`[ExternalAgent] agent-context for ${data.messageId}: responseMode=${data.responseMode}, isMentioned=${data.isMentioned}`)
     })
 
     // ── Incoming messages (broadcast from rooms.ts) ───────────────────────
     socket.on('message:new', (data: IncomingMessage | { message: IncomingMessage }) => {
       const message = 'message' in data && data.message ? data.message : data as IncomingMessage
       this.log.debug(`[ExternalAgent] message:new in ${message.conversationId} from ${message.senderId}`)
-      this.config.onMessage?.(message)
+
+      if (!this.filterEnabled || !this.config.onMessage) {
+        this.config.onMessage?.(message)
+        return
+      }
+
+      // Own messages always pass through
+      if (message.senderId === this.agentId) {
+        this.config.onMessage(message)
+        return
+      }
+
+      // Check if we already have context for this message
+      const entry = this.contextMap.get(message.id)
+      if (entry) {
+        this.contextMap.delete(message.id)
+        if (this.shouldDeliver(entry.context)) {
+          this.config.onMessage(message)
+        }
+        return
+      }
+
+      // No context yet — could be a DM (no context will arrive) or context is slightly delayed.
+      // Wait a short time, then check again.
+      setTimeout(() => {
+        const delayedEntry = this.contextMap.get(message.id)
+        if (delayedEntry) {
+          this.contextMap.delete(message.id)
+          if (this.shouldDeliver(delayedEntry.context)) {
+            this.config.onMessage!(message)
+          }
+        } else {
+          // No context received — this is a DM or context was not sent. Always deliver.
+          this.config.onMessage!(message)
+        }
+      }, CONTEXT_WAIT_MS)
     })
 
     // ── Message status updates ────────────────────────────────────────────
@@ -331,6 +386,8 @@ export class AgentClient {
     socket.on('disconnect', (reason: string) => {
       this.log.warn(`[ExternalAgent] Disconnected: ${reason}`)
       this.stopHeartbeat()
+      this.stopContextCleanup()
+      this.contextMap.clear()
       this.joinedConversations.clear()
 
       // Socket.IO does NOT auto-reconnect on server-initiated disconnect
@@ -374,6 +431,44 @@ export class AgentClient {
       this.log.error('[ExternalAgent] All reconnection attempts exhausted')
       this.config.onReconnectFailed?.()
     })
+  }
+
+  /**
+   * Determine whether a message should be delivered based on its agent context.
+   */
+  private shouldDeliver(ctx: AgentContext): boolean {
+    const mode: ResponseMode = ctx.responseMode ?? DEFAULT_RESPONSE_MODE
+    switch (mode) {
+      case 'all':
+      case 'proactive':
+        return true
+      case 'silent':
+        return false
+      case 'at_only':
+        return ctx.isMentioned
+      default:
+        // Unknown mode — deliver to be safe
+        return true
+    }
+  }
+
+  private startContextCleanup(): void {
+    this.stopContextCleanup()
+    this.contextCleanupTimer = setInterval(() => {
+      const now = Date.now()
+      for (const [id, entry] of this.contextMap) {
+        if (now - entry.receivedAt > CONTEXT_TTL_MS) {
+          this.contextMap.delete(id)
+        }
+      }
+    }, CONTEXT_TTL_MS)
+  }
+
+  private stopContextCleanup(): void {
+    if (this.contextCleanupTimer) {
+      clearInterval(this.contextCleanupTimer)
+      this.contextCleanupTimer = null
+    }
   }
 
   private startHeartbeat(intervalMs: number): void {

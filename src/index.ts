@@ -26,6 +26,9 @@ export type {
   PollContent,
   BurnAfterReadingContent,
   DownloadMediaOptions,
+  ResponseMode,
+  AgentContext,
+  MessageFilterConfig,
 } from './types.js'
 
 import { AgentClient } from './client.js'

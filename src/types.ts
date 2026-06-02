@@ -250,6 +250,45 @@ export interface AgentSDKConfig {
    * Example: wsEndpoint 'wss://host/hxa-link-api/ws/agent' → auto-derives '/hxa-link-api/ws'
    */
   socketPath?: string
+
+  /**
+   * Message filter options for response-mode based filtering of group messages.
+   * When enabled (default), the SDK listens for `message:agent-context` events and
+   * only delivers group messages that pass the response mode check to `onMessage`.
+   *
+   * DMs and own messages are always delivered regardless of this setting.
+   */
+  messageFilter?: MessageFilterConfig
+}
+
+/**
+ * Response mode sent by HxA Link in `message:agent-context` events.
+ * Controls whether a group message should be delivered to the agent's onMessage callback.
+ *
+ * - `all` / `proactive`: always deliver
+ * - `at_only`: deliver only if the agent is mentioned (default when server sends null)
+ * - `silent`: never deliver
+ */
+export type ResponseMode = 'all' | 'proactive' | 'at_only' | 'silent'
+
+/**
+ * Agent context received via the `message:agent-context` event.
+ * Sent by HxA Link for each group message to provide agent-specific metadata.
+ */
+export interface AgentContext {
+  messageId: string
+  conversationId: string
+  responseMode: ResponseMode | null
+  isMentioned: boolean
+}
+
+/**
+ * Message filter configuration for controlling which group messages
+ * are delivered to the onMessage callback based on agent context.
+ */
+export interface MessageFilterConfig {
+  /** Enable response-mode filtering (default: true) */
+  enabled?: boolean
 }
 
 /** @deprecated Use AgentSDKConfig instead */

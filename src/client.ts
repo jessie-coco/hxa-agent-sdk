@@ -19,6 +19,7 @@ const MAX_RECONNECT_ATTEMPTS = 50
 const DEFAULT_RESPONSE_MODE: ResponseMode = 'at_only'
 const CONTEXT_WAIT_MS = 200
 const CONTEXT_TTL_MS = 30_000
+const PING_TIMEOUT_MS = 3_000
 
 /**
  * AgentClient — Socket.IO client for agents connecting to HxA Link.
@@ -242,7 +243,14 @@ export class AgentClient {
         this.startContextCleanup()
       }
       this.config.onSessionToken?.(ack.agentSessionToken)
-      this.config.onConnect?.(ack)
+
+      // #909: Auto-ping guardian verification
+      this.pingGuardian(ack)
+    })
+
+    // ── Guardian pong (handled inline by pingGuardian timeout) ────────────
+    socket.on('agent:pong', (data: { guardianNotified?: boolean }) => {
+      this.log.info(`[ExternalAgent] Guardian pong received (notified: ${data?.guardianNotified ?? false})`)
     })
 
     // ── Agent context for group messages (arrives before message:new) ────
@@ -450,6 +458,32 @@ export class AgentClient {
         // Unknown mode — deliver to be safe
         return true
     }
+  }
+
+  private pingGuardian(ack: ConnectAck): void {
+    if (!this.socket?.connected) {
+      this.config.onConnect?.(ack)
+      return
+    }
+
+    let resolved = false
+    const timer = setTimeout(() => {
+      if (resolved) return
+      resolved = true
+      this.log.warn('[ExternalAgent] Guardian ping timed out — server may not support agent:ping')
+      this.config.onConnect?.(ack)
+    }, PING_TIMEOUT_MS)
+
+    const onPong = () => {
+      if (resolved) return
+      resolved = true
+      clearTimeout(timer)
+      this.config.onConnect?.(ack)
+    }
+
+    this.socket.once('agent:pong', onPong)
+    this.socket.emit('agent:ping')
+    this.log.info('[ExternalAgent] Sent agent:ping, waiting for guardian verification...')
   }
 
   private startContextCleanup(): void {
